@@ -1,0 +1,8 @@
+{
+  "name": "AKTIVATE Attendance",
+  "description": "Enterprise-grade staff tracking PWA for AKTIVATE advertising agency, featuring QR-based check-ins, GPS verification, and real-time HR dashboards.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ]
+}
