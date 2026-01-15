@@ -1,52 +1,59 @@
 
 import { QRCodeData } from '../types';
 
-const SALT = "AKTIVATE_BURUNDI_2024_SECURE_v2";
-
 /**
- * Backend Simulation: This represents the logic that would run in a 
- * Supabase Edge Function to generate the encrypted weekly QR payload.
+ * This service now simulates the interaction with the Supabase Edge Function.
+ * In production, 'generateWeeklyQR' would be a wrapper around a fetch() call to the API.
  */
-export const generateWeeklyQR = (expiryDate: Date): string => {
-  const payload = {
-    iss: 'AKTIVATE_AUTH_SERVER',
-    iat: Math.floor(Date.now() / 1000),
-    exp: Math.floor(expiryDate.getTime() / 1000),
-    // A unique identifier for the current active rotation
-    rotationId: `rot_${Math.floor(Date.now() / (7 * 24 * 60 * 60 * 1000))}`,
-    // Office location binding
-    loc: 'BUJUMBURA_HQ_1',
-    // High-entropy salt
-    checksum: Math.random().toString(36).substring(2, 15)
-  };
+
+export const generateWeeklyQR = async (expiryDate: Date): Promise<QRCodeData> => {
+  // Simulate network latency for the Edge Function call
+  await new Promise(resolve => setTimeout(resolve, 800));
+
+  const now = new Date();
+  const weekNumber = Math.ceil(now.getDate() / 7);
+  const rotationId = `ROT_${now.getFullYear()}_W${weekNumber}_${Math.random().toString(36).substring(7).toUpperCase()}`;
   
-  // In a real edge function, we would sign this using a secret key (JWT style)
-  // For simulation, we use a salted Base64 approach
-  const header = btoa(JSON.stringify({ alg: "HS256", typ: "QR" }));
+  // This matches the logic implemented in the Supabase Edge Function
+  const payload = {
+    iss: 'AKTIVATE_AUTH_PROD',
+    iat: Math.floor(now.getTime() / 1000),
+    exp: Math.floor(expiryDate.getTime() / 1000),
+    rid: rotationId,
+    loc: 'BUJ_HQ_MAIN'
+  };
+
   const data = btoa(JSON.stringify(payload));
-  return `${header}.${data}.${btoa(SALT)}`;
+  // Mocking the server-side HMAC signature
+  const signature = btoa(`${data}.PROD_SECRET`).substring(0, 32);
+  const qrString = `${data}.${signature}`;
+
+  const qrData: QRCodeData = {
+    id: `qr_${Math.random().toString(36).substring(2, 11)}`,
+    qr_data: qrString,
+    valid_from: now.toISOString(),
+    valid_until: expiryDate.toISOString(),
+    is_active: true,
+    rotation_id: rotationId,
+    checksum: signature
+  };
+
+  // Persist the "current active" state locally for simulated validation
+  localStorage.setItem('aktivate_active_qr', JSON.stringify(qrData));
+  
+  return qrData;
 };
 
-/**
- * Validates the QR string against simulation logic.
- */
-export const validateQRCode = (qrString: string, activeQR?: QRCodeData): boolean => {
+export const validateQRCode = (qrString: string): boolean => {
   try {
-    const parts = qrString.split('.');
-    if (parts.length !== 3) return false;
+    const saved = localStorage.getItem('aktivate_active_qr');
+    if (!saved) return false;
+    
+    const activeQR: QRCodeData = JSON.parse(saved);
+    if (qrString !== activeQR.qr_data) return false;
 
-    const payload = JSON.parse(atob(parts[1]));
-    const saltCheck = atob(parts[2]);
-
-    // Validate Signature simulation
-    if (saltCheck !== SALT) return false;
-
-    // Validate Expiration
-    const now = Math.floor(Date.now() / 1000);
-    if (payload.exp < now) return false;
-
-    // Validate if it matches the current active QR in DB
-    if (activeQR && qrString !== activeQR.qr_data) return false;
+    const now = new Date();
+    if (now > new Date(activeQR.valid_until)) return false;
 
     return true;
   } catch (e) {
@@ -54,13 +61,17 @@ export const validateQRCode = (qrString: string, activeQR?: QRCodeData): boolean
   }
 };
 
-/**
- * Schedule Logic: Returns the timestamp for the next automated rotation.
- * Typically used by a pg_cron or Edge Function scheduler.
- */
 export const getNextRotationSchedule = (): Date => {
-  const nextMonday = new Date();
-  nextMonday.setDate(nextMonday.getDate() + (1 + 7 - nextMonday.getDay()) % 7);
+  const d = new Date();
+  const day = d.getDay();
+  // Set to next Monday at 00:00:00
+  const diff = d.getDate() + (day === 0 ? 1 : 8 - day);
+  const nextMonday = new Date(d.setDate(diff));
   nextMonday.setHours(0, 0, 0, 0);
   return nextMonday;
+};
+
+export const getActiveQR = (): QRCodeData | null => {
+  const saved = localStorage.getItem('aktivate_active_qr');
+  return saved ? JSON.parse(saved) : null;
 };

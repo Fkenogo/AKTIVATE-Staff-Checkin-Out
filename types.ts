@@ -33,8 +33,17 @@ export interface AttendanceRecord {
 export interface QRCodeData {
   id: string;
   qr_data: string;
+  valid_from: string;
   valid_until: string;
   is_active: boolean;
+  rotation_id: string;
+  checksum: string;
+}
+
+export interface RotationLog {
+  timestamp: string;
+  event: string;
+  status: 'success' | 'system';
 }
 
 export interface Notification {

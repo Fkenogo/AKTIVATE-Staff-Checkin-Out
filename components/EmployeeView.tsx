@@ -1,11 +1,12 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import QRScanner from './QRScanner';
 import { useAttendance } from '../hooks/useAttendance';
-import { COLORS } from '../constants';
-import { Notification } from '../types';
+import { COLORS, OFFICE_COORDS } from '../constants';
+import { Notification, AttendanceRecord } from '../types';
 
 const EmployeeView: React.FC = () => {
+  const [activeTab, setActiveTab] = useState<'status' | 'history'>('status');
   const [showScanner, setShowScanner] = useState(false);
   const [showManualForm, setShowManualForm] = useState<'checkin' | 'checkout' | null>(null);
   const [showLateForm, setShowLateForm] = useState(false);
@@ -14,14 +15,39 @@ const EmployeeView: React.FC = () => {
   const { submitCheckIn, submitCheckOut, loading, error, isOnline, checkIfLate } = useAttendance();
   const [checkedIn, setCheckedIn] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
+  const [testMode, setTestMode] = useState(false);
   
+  // Mock history data for the calendar
+  const history: Partial<AttendanceRecord>[] = [
+    { user_id: 'u1', check_in_time: '2024-05-01T08:10:00Z', is_late: false, status: 'approved' },
+    { user_id: 'u1', check_in_time: '2024-05-02T08:45:00Z', is_late: true, status: 'approved' },
+    { user_id: 'u1', check_in_time: '2024-05-03T08:15:00Z', check_in_method: 'manual', is_late: false, status: 'approved' },
+    { user_id: 'u1', check_in_time: '2024-05-06T08:05:00Z', is_late: false, status: 'approved' },
+    { user_id: 'u1', check_in_time: '2024-05-07T08:55:00Z', is_late: true, status: 'approved' },
+    { user_id: 'u1', check_in_time: '2024-05-08T08:12:00Z', is_late: false, status: 'approved' },
+    { user_id: 'u1', check_in_time: '2024-05-09T08:15:00Z', is_late: false, status: 'approved' },
+    { user_id: 'u1', check_in_time: '2024-05-10T08:22:00Z', is_late: false, status: 'approved' },
+  ];
+
   const [notifications, setNotifications] = useState<Notification[]>([
     { id: '1', user_id: 'u1', title: 'Check-in Approved', message: 'Your manual check-in for yesterday has been approved by HR.', is_read: false, type: 'success', created_at: new Date().toISOString() },
-    { id: '2', user_id: 'u1', title: 'Late Arrival', message: 'You checked in after 08:30 AM today.', is_read: true, type: 'warning', created_at: new Date().toISOString() }
+    { id: '2', user_id: 'u1', title: 'Late Arrival', message: 'You checked in after 08:30 AM today.', is_read: true, type: 'warning', created_at: new Date().toISOString() },
+    { id: '3', user_id: 'u1', title: 'System Update', message: 'Bujumbura HQ office hours updated to 08:00 AM - 05:00 PM.', is_read: false, type: 'info', created_at: new Date().toISOString() }
   ]);
+
+  const isCurrentTimeLate = useMemo(() => checkIfLate(new Date()), [checkIfLate]);
 
   const handleQRScan = async (data: string) => {
     setShowScanner(false);
+    
+    // In Test Mode, we bypass distance checks by mocking the location result in useAttendance
+    // For this prototype, we'll just handle it here for simpler implementation
+    if (testMode) {
+      // Mocked success
+      setCheckedIn(!checkedIn);
+      return;
+    }
+
     const now = new Date();
     const isLate = checkIfLate(now);
     
@@ -38,8 +64,9 @@ const EmployeeView: React.FC = () => {
         await submitCheckOut('qr_scan');
         setCheckedIn(false);
       }
-      alert("Scan success! Record updated.");
-    } catch (err) {}
+    } catch (err) {
+      alert(err.message || "Attendance failed. Are you at the office?");
+    }
   };
 
   const handleLateSubmit = async (e: React.FormEvent) => {
@@ -53,7 +80,6 @@ const EmployeeView: React.FC = () => {
       setCheckedIn(true);
       setShowLateForm(false);
       setLateReason("");
-      alert("Late check-in recorded.");
     } catch (err) {}
   };
 
@@ -64,79 +90,116 @@ const EmployeeView: React.FC = () => {
       alert("Please provide a more detailed reason (at least 20 characters).");
       return;
     }
-    
+
     try {
       if (showManualForm === 'checkin') {
-        await submitCheckIn('manual', trimmedReason);
-        alert("Manual check-in request sent for HR approval.");
+        await submitCheckIn('manual', trimmedReason, isCurrentTimeLate ? lateReason : undefined);
         setCheckedIn(true); 
       } else {
-        await submitCheckOut('manual', trimmedReason);
-        alert("Manual check-out request sent for HR approval.");
+        await submitCheckOut('manual', trimmedReason); 
         setCheckedIn(false);
       }
       setShowManualForm(null);
       setReason("");
+      setLateReason("");
     } catch (err) {}
   };
 
   const toggleNotificationRead = (id: string) => {
-    setNotifications(prev => prev.map(n => n.id === id ? { ...n, is_read: !n.is_read } : n));
+    setNotifications(prev => prev.map(n => 
+      n.id === id ? { ...n, is_read: !n.is_read } : n
+    ));
   };
 
-  const markAllRead = () => {
-    setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
-  };
+  const unreadCount = useMemo(() => notifications.filter(n => !n.is_read).length, [notifications]);
 
-  const unreadCount = notifications.filter(n => !n.is_read).length;
+  // Calendar Logic
+  const daysInMonth = (month: number, year: number) => new Date(year, month + 1, 0).getDate();
+  const currentMonth = 4; // May
+  const currentYear = 2024;
+  const calendarDays = Array.from({ length: daysInMonth(currentMonth, currentYear) }, (_, i) => i + 1);
+
+  const getDayStatus = (day: number) => {
+    const dateStr = `${currentYear}-${(currentMonth + 1).toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
+    const record = history.find(h => h.check_in_time?.startsWith(dateStr));
+    if (!record) return null;
+    if (record.check_in_method === 'manual') return 'manual';
+    if (record.is_late) return 'late';
+    return 'on-time';
+  };
 
   return (
-    <div className="space-y-6 max-w-md mx-auto px-1">
-      {/* Header Stats */}
-      <div className="flex justify-between items-center py-2">
-        <div className="flex items-center gap-2">
-          <div className={`w-2.5 h-2.5 rounded-full ${isOnline ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-rose-500'} animate-pulse`}></div>
-          <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
-            {isOnline ? 'AKTIVATE Cloud Online' : 'Offline Mode'}
-          </span>
+    <div className="space-y-6 max-w-md mx-auto px-1 relative pb-10">
+      {/* Top Bar with Alerts */}
+      <div className="flex justify-between items-center py-2 px-1">
+        <div className="flex flex-col gap-1">
+           <div className="flex items-center gap-3">
+            <div className="relative">
+              <div className={`w-3 h-3 rounded-full ${isOnline ? 'bg-emerald-500' : 'bg-rose-500'}`}></div>
+              <div className={`absolute -inset-1 rounded-full ${isOnline ? 'bg-emerald-500/30' : 'bg-rose-500/30'} animate-ping`}></div>
+            </div>
+            <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+              {isOnline ? 'Network Live' : 'Offline Mode'}
+            </span>
+          </div>
+          {/* Test Mode Toggle */}
+          <button 
+            onClick={() => setTestMode(!testMode)}
+            className={`text-[9px] font-black uppercase tracking-widest flex items-center gap-2 transition-all ${testMode ? 'text-indigo-600' : 'text-slate-300'}`}
+          >
+            <i className={`fas ${testMode ? 'fa-toggle-on' : 'fa-toggle-off'} text-sm`}></i>
+            Bypass GPS
+          </button>
         </div>
+        
         <button 
           onClick={() => setShowNotifications(!showNotifications)}
-          className="relative p-2.5 bg-white border border-slate-100 rounded-xl shadow-sm hover:text-indigo-600 transition-all"
+          className={`relative w-10 h-10 flex items-center justify-center rounded-2xl transition-all duration-300 ${showNotifications ? 'bg-slate-900 text-white shadow-xl' : 'bg-white border border-slate-100 text-slate-500'}`}
         >
-          <i className="fas fa-bell text-lg"></i>
-          {unreadCount > 0 && (
-            <span className="absolute -top-1 -right-1 bg-rose-500 text-white text-[9px] w-5 h-5 flex items-center justify-center rounded-full border-2 border-white font-black">
+          <i className={`fas ${showNotifications ? 'fa-times' : 'fa-bell'} text-lg`}></i>
+          {unreadCount > 0 && !showNotifications && (
+            <span className="absolute -top-1 -right-1 bg-rose-500 text-white text-[9px] w-5 h-5 flex items-center justify-center rounded-full border-2 border-white font-black animate-bounce">
               {unreadCount}
             </span>
           )}
         </button>
       </div>
 
-      {/* Notifications */}
+      {/* Modern Notification Panel */}
       {showNotifications && (
-        <div className="bg-white border border-slate-100 rounded-3xl shadow-2xl overflow-hidden animate-in fade-in slide-in-from-top-4 z-50 relative">
-          <div className="p-5 bg-slate-50/50 border-b border-slate-100 flex justify-between items-center">
-            <h4 className="font-black text-slate-800 text-xs uppercase tracking-widest">Alerts ({unreadCount})</h4>
-            <button className="text-[10px] text-indigo-600 font-black uppercase hover:underline" onClick={markAllRead}>Mark all read</button>
+        <div className="absolute top-16 right-0 left-0 z-[100] bg-white/95 backdrop-blur-xl border border-slate-200/50 rounded-[2.5rem] shadow-2xl shadow-indigo-200/50 overflow-hidden animate-in fade-in slide-in-from-top-6 duration-300 ease-out">
+          <div className="p-6 bg-slate-50/50 border-b border-slate-100 flex justify-between items-center">
+            <h4 className="font-black text-slate-900 text-[11px] uppercase tracking-[0.2em]">Activity Feed</h4>
+            <button 
+              onClick={() => setNotifications([])}
+              className="text-[9px] font-black text-slate-400 uppercase tracking-widest hover:text-rose-500 transition-colors"
+            >
+              Clear All
+            </button>
           </div>
-          <div className="max-h-80 overflow-y-auto">
+          <div className="max-h-[380px] overflow-y-auto custom-scrollbar p-2">
             {notifications.length === 0 ? (
-              <div className="p-10 text-center text-slate-300 text-sm font-medium">No alerts today</div>
+              <div className="p-12 text-center opacity-40">
+                <i className="fas fa-wind text-3xl mb-3"></i>
+                <p className="text-[10px] font-bold uppercase tracking-widest">Quiet for now</p>
+              </div>
             ) : (
-              notifications.map(n => (
+              notifications.map((n, i) => (
                 <div 
                   key={n.id} 
                   onClick={() => toggleNotificationRead(n.id)}
-                  className={`p-5 border-b border-slate-50 flex gap-4 transition-colors cursor-pointer group ${n.is_read ? 'bg-white' : 'bg-indigo-50/20'}`}
+                  style={{ animationDelay: `${i * 100}ms` }}
+                  className={`p-4 mb-2 rounded-3xl flex gap-4 transition-all cursor-pointer group hover:bg-slate-50 animate-in slide-in-from-right-4 fade-in duration-500 fill-mode-both ${n.is_read ? 'opacity-60' : 'bg-white shadow-sm border border-slate-50'}`}
                 >
-                  <div className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${n.type === 'success' ? 'bg-emerald-500' : n.type === 'warning' ? 'bg-amber-500' : 'bg-indigo-500'}`}></div>
-                  <div className="space-y-1">
-                    <p className={`text-sm ${n.is_read ? 'font-semibold text-slate-600' : 'font-black text-slate-900'}`}>{n.title}</p>
-                    <p className="text-xs text-slate-500 leading-relaxed font-medium">{n.message}</p>
+                  <div className={`w-10 h-10 rounded-2xl flex items-center justify-center shrink-0 ${n.type === 'success' ? 'bg-emerald-50 text-emerald-600' : n.type === 'warning' ? 'bg-amber-50 text-amber-600' : 'bg-indigo-50 text-indigo-600'}`}>
+                    <i className={`fas ${n.type === 'success' ? 'fa-check-circle' : n.type === 'warning' ? 'fa-exclamation-triangle' : 'fa-info-circle'} text-sm`}></i>
                   </div>
-                  <div className="ml-auto opacity-0 group-hover:opacity-100 transition-opacity">
-                    <i className={`fas ${n.is_read ? 'fa-envelope-open' : 'fa-envelope'} text-slate-300`}></i>
+                  <div className="space-y-1 flex-1">
+                    <div className="flex justify-between items-start">
+                      <p className={`text-xs leading-tight ${n.is_read ? 'font-semibold text-slate-600' : 'font-black text-slate-900'}`}>{n.title}</p>
+                      <span className="text-[8px] font-black text-slate-300 uppercase shrink-0">Now</span>
+                    </div>
+                    <p className="text-[10px] text-slate-500 leading-relaxed font-medium line-clamp-2">{n.message}</p>
                   </div>
                 </div>
               ))
@@ -145,104 +208,165 @@ const EmployeeView: React.FC = () => {
         </div>
       )}
 
-      {/* Main Actions */}
-      <div className="bg-white p-6 rounded-[2.5rem] shadow-xl border border-slate-50 space-y-6">
-        <div className="text-center space-y-1">
-          <p className="text-slate-400 text-[10px] font-black uppercase tracking-[0.2em]">Work Status</p>
-          <div className={`text-2xl font-black tracking-tight ${checkedIn ? 'text-emerald-600' : 'text-slate-300'}`}>
-            {checkedIn ? 'ON THE CLOCK' : 'OFF DUTY'}
-          </div>
-        </div>
-
+      {/* Segmented Control */}
+      <div className="bg-slate-100 p-1.5 rounded-[1.8rem] flex gap-1">
         <button 
-          onClick={() => setShowScanner(true)}
-          className={`w-full ${checkedIn ? 'bg-rose-500' : 'bg-indigo-600'} text-white py-6 rounded-3xl font-black text-xl shadow-lg flex flex-col items-center justify-center gap-2 active:scale-95 transition-all`}
-          disabled={loading}
+          onClick={() => setActiveTab('status')}
+          className={`flex-1 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'status' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
         >
-          {loading ? (
-            <i className="fas fa-circle-notch animate-spin text-2xl"></i>
-          ) : (
-            <>
-              <i className={`fas ${checkedIn ? 'fa-sign-out-alt' : 'fa-qrcode'} text-3xl`}></i>
-              <span className="text-sm uppercase tracking-widest">{checkedIn ? 'Check Out' : 'Check In'}</span>
-            </>
-          )}
+          Check-In Status
         </button>
-
-        <div className="grid grid-cols-2 gap-4">
-          <button 
-            onClick={() => setShowManualForm(checkedIn ? 'checkout' : 'checkin')}
-            className="bg-slate-50 border border-slate-200 text-slate-600 py-4 rounded-2xl font-bold flex flex-col items-center gap-1 hover:bg-white transition-all text-xs uppercase tracking-wider"
-          >
-            <i className={`fas fa-keyboard text-lg mb-1 ${checkedIn ? 'text-rose-400' : 'text-indigo-400'}`}></i>
-            Manual {checkedIn ? 'Out' : 'In'}
-          </button>
-          <div className="bg-slate-50 border border-slate-200 p-4 rounded-2xl flex flex-col items-center justify-center text-center">
-            <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Efficiency</p>
-            <p className="text-lg font-black text-slate-800">92%</p>
-          </div>
-        </div>
+        <button 
+          onClick={() => setActiveTab('history')}
+          className={`flex-1 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === 'history' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+        >
+          Attendance History
+        </button>
       </div>
 
-      {/* Lateness Modal */}
-      {showLateForm && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/80 backdrop-blur-sm p-4">
-          <div className="bg-white w-full max-w-sm p-8 rounded-[2.5rem] shadow-2xl space-y-6">
-            <div className="text-center space-y-2">
-              <div className="w-16 h-16 bg-rose-50 text-rose-500 rounded-2xl mx-auto flex items-center justify-center text-2xl">
-                <i className="fas fa-clock"></i>
-              </div>
-              <h3 className="font-black text-slate-900 text-lg uppercase">Late Arrival</h3>
-              <p className="text-xs text-slate-500 font-medium">It's after 08:30 AM. Please provide a reason for the delay.</p>
+      {activeTab === 'status' ? (
+        <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-6">
+          <div className="bg-white p-8 rounded-[3rem] shadow-xl border border-slate-50 flex flex-col items-center gap-6">
+            <div className="text-center space-y-1">
+              <p className="text-slate-400 text-[10px] font-black uppercase tracking-[0.25em]">Bujumbura HQ</p>
+              <h2 className={`text-3xl font-black tracking-tight ${checkedIn ? 'text-emerald-600' : 'text-slate-200'}`}>
+                {checkedIn ? 'Shift Active' : 'Standby'}
+              </h2>
             </div>
-            <form onSubmit={handleLateSubmit} className="space-y-4">
-              <textarea
-                required
-                className="w-full bg-slate-50 border border-slate-200 rounded-2xl p-4 text-sm font-medium focus:ring-2 focus:ring-rose-500 focus:outline-none min-h-[100px] resize-none"
-                placeholder="Reason for being late..."
-                value={lateReason}
-                onChange={(e) => setLateReason(e.target.value)}
-              />
+
+            <button 
+              onClick={() => setShowScanner(true)}
+              className={`w-full h-56 rounded-[2.5rem] flex flex-col items-center justify-center gap-4 transition-all active:scale-[0.97] shadow-2xl relative overflow-hidden group ${checkedIn ? 'bg-rose-500 text-white' : 'bg-indigo-600 text-white'}`}
+            >
+              <div className="absolute inset-0 bg-white/10 opacity-0 group-hover:opacity-100 transition-opacity"></div>
+              {testMode && (
+                <div className="absolute top-4 right-4 bg-white/20 text-white text-[8px] font-black px-2 py-1 rounded-full border border-white/20 uppercase tracking-widest">Test Mode</div>
+              )}
+              <div className="w-20 h-20 bg-white/20 rounded-full flex items-center justify-center backdrop-blur-md mb-2">
+                <i className={`fas ${checkedIn ? 'fa-power-off' : 'fa-expand'} text-3xl`}></i>
+              </div>
+              <div className="text-center">
+                <p className="text-xl font-black uppercase tracking-widest">{checkedIn ? 'Clock Out' : 'Scan QR'}</p>
+                <p className="text-[10px] opacity-70 font-bold uppercase tracking-widest mt-1">
+                  {testMode ? 'GPS Bypassed' : 'GPS Verification Required'}
+                </p>
+              </div>
+            </button>
+
+            <div className="w-full grid grid-cols-2 gap-4">
               <button 
-                type="submit"
-                className="w-full bg-slate-900 text-white py-4 rounded-2xl font-black uppercase text-sm tracking-widest shadow-lg"
+                onClick={() => setShowManualForm(checkedIn ? 'checkout' : 'checkin')}
+                className="bg-slate-50 border border-slate-100 py-5 rounded-3xl flex flex-col items-center gap-2 hover:bg-white hover:shadow-lg hover:border-indigo-100 transition-all"
               >
-                Submit & Clock In
+                <i className={`fas fa-fingerprint text-xl ${checkedIn ? 'text-rose-400' : 'text-indigo-400'}`}></i>
+                <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Manual Assist</span>
               </button>
-            </form>
+              <div className="bg-slate-900 text-white p-5 rounded-3xl flex flex-col items-center justify-center">
+                <span className="text-[8px] font-black text-indigo-400 uppercase tracking-widest mb-1">Weekly Score</span>
+                <span className="text-2xl font-black">4.8</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 bg-white p-8 rounded-[3rem] shadow-xl border border-slate-50 space-y-6">
+          <div className="flex justify-between items-center px-1">
+            <h3 className="font-black text-slate-900 text-sm uppercase tracking-widest">May 2024</h3>
+            <div className="flex gap-1">
+              <div className="w-2 h-2 rounded-full bg-emerald-400"></div>
+              <div className="w-2 h-2 rounded-full bg-amber-400"></div>
+              <div className="w-2 h-2 rounded-full bg-sky-400"></div>
+            </div>
+          </div>
+          
+          <div className="grid grid-cols-7 gap-2 text-center">
+            {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map(d => (
+              <span key={d} className="text-[9px] font-black text-slate-300 uppercase mb-2">{d}</span>
+            ))}
+            {calendarDays.map(day => {
+              const status = getDayStatus(day);
+              return (
+                <div key={day} className="flex flex-col items-center justify-center p-1">
+                  <span className={`text-[11px] font-bold mb-1 ${day === new Date().getDate() ? 'text-indigo-600 underline decoration-2 underline-offset-4' : 'text-slate-600'}`}>{day}</span>
+                  <div className={`w-3 h-3 rounded-full transition-all duration-500 ${
+                    status === 'on-time' ? 'bg-emerald-400 shadow-sm shadow-emerald-200' : 
+                    status === 'late' ? 'bg-amber-400 shadow-sm shadow-amber-200' : 
+                    status === 'manual' ? 'bg-sky-400 shadow-sm shadow-sky-200' : 
+                    'bg-slate-100'
+                  }`}></div>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="pt-6 border-t border-slate-50 grid grid-cols-2 gap-y-3">
+            <div className="flex items-center gap-3">
+              <div className="w-2.5 h-2.5 rounded-full bg-emerald-400"></div>
+              <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">On Time</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="w-2.5 h-2.5 rounded-full bg-amber-400"></div>
+              <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Late Arrival</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="w-2.5 h-2.5 rounded-full bg-sky-400"></div>
+              <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Manual Log</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="w-2.5 h-2.5 rounded-full bg-slate-100"></div>
+              <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">No Record</span>
+            </div>
           </div>
         </div>
       )}
 
-      {/* Manual Request Modal */}
+      {showLateForm && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-slate-900/40 backdrop-blur-md p-6">
+          <div className="bg-white w-full max-w-sm p-8 rounded-[3rem] shadow-2xl space-y-6">
+            <h3 className="font-black text-slate-900 text-lg uppercase text-center">Late Entry Log</h3>
+            <textarea
+              required
+              className="w-full bg-slate-50 border-none rounded-2xl p-4 text-sm font-medium focus:ring-2 focus:ring-rose-500 focus:outline-none min-h-[120px] resize-none"
+              placeholder="Reason for late arrival..."
+              value={lateReason}
+              onChange={(e) => setLateReason(e.target.value)}
+            />
+            <button onClick={handleLateSubmit} className="w-full bg-rose-500 text-white py-5 rounded-3xl font-black uppercase text-xs tracking-widest shadow-xl shadow-rose-200">Submit Arrival</button>
+          </div>
+        </div>
+      )}
+
       {showManualForm && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4">
-          <div className="bg-white w-full max-w-sm p-8 rounded-[2.5rem] shadow-2xl space-y-6">
-            <div className="flex justify-between items-start">
-              <h3 className="font-black text-slate-900 text-lg uppercase">{showManualForm === 'checkin' ? 'Manual Check-In' : 'Manual Check-Out'}</h3>
-              <button onClick={() => setShowManualForm(null)} className="text-slate-300 hover:text-slate-600"><i className="fas fa-times text-xl"></i></button>
+        <div className="fixed inset-0 z-[190] flex items-center justify-center bg-slate-900/30 backdrop-blur-md p-6">
+          <div className="bg-white w-full max-w-sm p-8 rounded-[3rem] shadow-2xl space-y-6">
+             <div className="flex justify-between items-center">
+              <h3 className="font-black text-slate-900 text-sm uppercase">Manual Justification</h3>
+              <button onClick={() => setShowManualForm(null)} className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-400 hover:text-rose-500 transition-colors"><i className="fas fa-times"></i></button>
             </div>
-            <form onSubmit={handleManualSubmit} className="space-y-4">
-              <textarea
-                required
-                className="w-full bg-slate-50 border border-slate-200 rounded-2xl p-4 text-sm font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none min-h-[120px] resize-none"
-                placeholder="Detailed reason (Min 20 characters)..."
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-              />
-              <button 
-                type="submit"
-                disabled={reason.trim().length < 20}
-                className="w-full bg-slate-900 text-white py-4 rounded-2xl font-black uppercase text-sm tracking-widest shadow-lg disabled:opacity-50"
-              >
-                Request Approval
-              </button>
-            </form>
+            <textarea
+              required
+              className="w-full bg-slate-50 border-none rounded-2xl p-4 text-sm font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none min-h-[120px] resize-none"
+              placeholder="Detailed explanation (min 20 chars)..."
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+            />
+            <button 
+              onClick={handleManualSubmit} 
+              disabled={reason.length < 20}
+              className="w-full bg-slate-900 text-white py-5 rounded-3xl font-black uppercase text-xs tracking-widest disabled:opacity-30 shadow-xl"
+            >
+              Request Manual Auth
+            </button>
           </div>
         </div>
       )}
 
       {showScanner && <QRScanner onScan={handleQRScan} onClose={() => setShowScanner(false)} />}
+
+      <style>{`
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
+      `}</style>
     </div>
   );
 };

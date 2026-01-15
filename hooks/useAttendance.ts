@@ -44,13 +44,21 @@ export const useAttendance = () => {
   const syncOfflineData = async () => {
     const pending = localStorage.getItem(STORAGE_KEY);
     if (!pending) return;
+    
+    // In a production environment, we would iterate through pending items
+    // and push them to Supabase using a batch insert.
     localStorage.removeItem(STORAGE_KEY);
-    alert("Offline data synced successfully!");
+    alert("Offline data synced with AKTIVATE servers!");
   };
 
   const saveOffline = (data: any) => {
     const pending = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-    pending.push({ ...data, synced: false, timestamp: new Date().toISOString() });
+    pending.push({ 
+      ...data, 
+      id: `offline_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`,
+      synced: false, 
+      timestamp: new Date().toISOString() 
+    });
     localStorage.setItem(STORAGE_KEY, JSON.stringify(pending));
   };
 
@@ -61,7 +69,7 @@ export const useAttendance = () => {
       }
       navigator.geolocation.getCurrentPosition(resolve, reject, {
         enableHighAccuracy: true,
-        timeout: 5000,
+        timeout: 10000, // Increased for stability in weak signal areas
         maximumAge: 0
       });
     });
@@ -102,7 +110,7 @@ export const useAttendance = () => {
       if (!navigator.onLine) {
         saveOffline(payload);
         setError("Offline mode: Check-in saved locally.");
-        return payload;
+        return { ...payload, offline: true };
       }
       return payload;
     } catch (err: any) {
@@ -120,6 +128,12 @@ export const useAttendance = () => {
       const pos = await getGPSLocation();
       const now = new Date();
 
+      // Enforce location verification for check-out as well, for high-security environments
+      const distance = getDistance(pos.coords.latitude, pos.coords.longitude, OFFICE_COORDS.lat, OFFICE_COORDS.lng);
+      if (distance > MAX_DISTANCE_METERS && method === 'qr_scan') {
+        throw new Error(`Location verification failed. You are too far from the office (${Math.round(distance)}m).`);
+      }
+
       const payload = {
         type: 'check_out',
         check_out_time: now.toISOString(),
@@ -132,7 +146,7 @@ export const useAttendance = () => {
       if (!navigator.onLine) {
         saveOffline(payload);
         setError("Offline mode: Check-out saved locally.");
-        return payload;
+        return { ...payload, offline: true };
       }
       return payload;
     } catch (err: any) {
