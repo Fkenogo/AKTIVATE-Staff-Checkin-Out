@@ -3,9 +3,21 @@ import React, { useState, useEffect, useMemo } from 'react';
 import QRScanner from './QRScanner';
 import { useAttendance } from '../hooks/useAttendance';
 import { COLORS, OFFICE_COORDS } from '../constants';
-import { Notification, AttendanceRecord } from '../types';
+import { Notification, AttendanceRecord, User } from '../types';
 
-const EmployeeView: React.FC = () => {
+interface EmployeeViewProps {
+  user: User;
+  attendanceRecords: AttendanceRecord[];
+  onAddAttendance: (record: AttendanceRecord) => void;
+  onUpdateAttendance: (record: AttendanceRecord) => void;
+}
+
+const EmployeeView: React.FC<EmployeeViewProps> = ({ 
+  user, 
+  attendanceRecords, 
+  onAddAttendance, 
+  onUpdateAttendance 
+}) => {
   const [activeTab, setActiveTab] = useState<'status' | 'history'>('status');
   const [showScanner, setShowScanner] = useState(false);
   const [showManualForm, setShowManualForm] = useState<'checkin' | 'checkout' | null>(null);
@@ -13,26 +25,23 @@ const EmployeeView: React.FC = () => {
   const [lateReason, setLateReason] = useState("");
   const [reason, setReason] = useState("");
   const { submitCheckIn, submitCheckOut, loading, error, isOnline, checkIfLate } = useAttendance();
-  const [checkedIn, setCheckedIn] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [testMode, setTestMode] = useState(false);
-  
-  // Mock history data for the calendar
-  const history: Partial<AttendanceRecord>[] = [
-    { user_id: 'u1', check_in_time: '2024-05-01T08:10:00Z', is_late: false, status: 'approved' },
-    { user_id: 'u1', check_in_time: '2024-05-02T08:45:00Z', is_late: true, status: 'approved' },
-    { user_id: 'u1', check_in_time: '2024-05-03T08:15:00Z', check_in_method: 'manual', is_late: false, status: 'approved' },
-    { user_id: 'u1', check_in_time: '2024-05-06T08:05:00Z', is_late: false, status: 'approved' },
-    { user_id: 'u1', check_in_time: '2024-05-07T08:55:00Z', is_late: true, status: 'approved' },
-    { user_id: 'u1', check_in_time: '2024-05-08T08:12:00Z', is_late: false, status: 'approved' },
-    { user_id: 'u1', check_in_time: '2024-05-09T08:15:00Z', is_late: false, status: 'approved' },
-    { user_id: 'u1', check_in_time: '2024-05-10T08:22:00Z', is_late: false, status: 'approved' },
-  ];
+
+  const currentRecord = useMemo(() => {
+    return attendanceRecords.find(r => r.user_id === user.id && !r.check_out_time);
+  }, [attendanceRecords, user.id]);
+
+  const checkedIn = !!currentRecord;
+
+  const history = useMemo(() => {
+    return attendanceRecords.filter(r => r.user_id === user.id);
+  }, [attendanceRecords, user.id]);
 
   const [notifications, setNotifications] = useState<Notification[]>([
-    { id: '1', user_id: 'u1', title: 'Check-in Approved', message: 'Your manual check-in for yesterday has been approved by HR.', is_read: false, type: 'success', created_at: new Date().toISOString() },
-    { id: '2', user_id: 'u1', title: 'Late Arrival', message: 'You checked in after 08:30 AM today.', is_read: true, type: 'warning', created_at: new Date().toISOString() },
-    { id: '3', user_id: 'u1', title: 'System Update', message: 'Bujumbura HQ office hours updated to 08:00 AM - 05:00 PM.', is_read: false, type: 'info', created_at: new Date().toISOString() }
+    { id: '1', user_id: user.id, title: 'Check-in Approved', message: 'Your manual check-in for yesterday has been approved by HR.', is_read: false, type: 'success', created_at: new Date().toISOString() },
+    { id: '2', user_id: user.id, title: 'Late Arrival', message: 'You checked in after 08:30 AM today.', is_read: true, type: 'warning', created_at: new Date().toISOString() },
+    { id: '3', user_id: user.id, title: 'System Update', message: 'Bujumbura HQ office hours updated to 08:00 AM - 05:00 PM.', is_read: false, type: 'info', created_at: new Date().toISOString() }
   ]);
 
   const isCurrentTimeLate = useMemo(() => checkIfLate(new Date()), [checkIfLate]);
@@ -40,11 +49,25 @@ const EmployeeView: React.FC = () => {
   const handleQRScan = async (data: string) => {
     setShowScanner(false);
     
-    // In Test Mode, we bypass distance checks by mocking the location result in useAttendance
-    // For this prototype, we'll just handle it here for simpler implementation
     if (testMode) {
-      // Mocked success
-      setCheckedIn(!checkedIn);
+      if (!checkedIn) {
+        const mockRecord: AttendanceRecord = {
+          id: `r-${Date.now()}`,
+          user_id: user.id,
+          check_in_time: new Date().toISOString(),
+          check_in_method: 'qr_scan',
+          location_gps: { lat: -3.38, lng: 29.36 },
+          is_late: checkIfLate(new Date()),
+          status: 'approved'
+        };
+        onAddAttendance(mockRecord);
+      } else if (currentRecord) {
+        onUpdateAttendance({
+          ...currentRecord,
+          check_out_time: new Date().toISOString(),
+          check_out_method: 'qr_scan'
+        });
+      }
       return;
     }
 
@@ -58,11 +81,21 @@ const EmployeeView: React.FC = () => {
 
     try {
       if (!checkedIn) {
-        await submitCheckIn('qr_scan');
-        setCheckedIn(true);
-      } else {
-        await submitCheckOut('qr_scan');
-        setCheckedIn(false);
+        const payload = await submitCheckIn('qr_scan');
+        const newRecord: AttendanceRecord = {
+          id: `r-${Date.now()}`,
+          user_id: user.id,
+          ...payload,
+          status: payload.status as any
+        };
+        onAddAttendance(newRecord);
+      } else if (currentRecord) {
+        const payload = await submitCheckOut('qr_scan');
+        onUpdateAttendance({
+          ...currentRecord,
+          ...payload,
+          status: payload.status as any
+        });
       }
     } catch (err) {
       alert(err.message || "Attendance failed. Are you at the office?");
@@ -76,8 +109,14 @@ const EmployeeView: React.FC = () => {
       return;
     }
     try {
-      await submitCheckIn('qr_scan', undefined, lateReason);
-      setCheckedIn(true);
+      const payload = await submitCheckIn('qr_scan', undefined, lateReason);
+      const newRecord: AttendanceRecord = {
+        id: `r-${Date.now()}`,
+        user_id: user.id,
+        ...payload,
+        status: payload.status as any
+      };
+      onAddAttendance(newRecord);
       setShowLateForm(false);
       setLateReason("");
     } catch (err) {}
@@ -93,11 +132,21 @@ const EmployeeView: React.FC = () => {
 
     try {
       if (showManualForm === 'checkin') {
-        await submitCheckIn('manual', trimmedReason, isCurrentTimeLate ? lateReason : undefined);
-        setCheckedIn(true); 
-      } else {
-        await submitCheckOut('manual', trimmedReason); 
-        setCheckedIn(false);
+        const payload = await submitCheckIn('manual', trimmedReason, isCurrentTimeLate ? lateReason : undefined);
+        const newRecord: AttendanceRecord = {
+          id: `r-${Date.now()}`,
+          user_id: user.id,
+          ...payload,
+          status: payload.status as any
+        };
+        onAddAttendance(newRecord);
+      } else if (currentRecord) {
+        const payload = await submitCheckOut('manual', trimmedReason); 
+        onUpdateAttendance({
+          ...currentRecord,
+          ...payload,
+          status: payload.status as any
+        });
       }
       setShowManualForm(null);
       setReason("");

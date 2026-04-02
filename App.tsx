@@ -4,10 +4,11 @@ import Layout from './components/Layout';
 import EmployeeView from './components/EmployeeView';
 import AdminDashboard from './components/AdminDashboard';
 import PendingApproval from './components/PendingApproval';
-import { User } from './types';
+import { User, AttendanceRecord } from './types';
 import { getActiveQR, generateWeeklyQR, getNextRotationSchedule } from './services/qrService';
 
 const USER_STORAGE_KEY = 'aktivate_users_v2';
+const ATTENDANCE_STORAGE_KEY = 'aktivate_attendance_v2';
 
 const INITIAL_USERS: User[] = [
   {
@@ -52,11 +53,22 @@ const INITIAL_USERS: User[] = [
   }
 ];
 
+const INITIAL_ATTENDANCE: AttendanceRecord[] = [
+  { id: 'r1', user_id: 'hr-1', check_in_time: new Date(new Date().setHours(8, 15)).toISOString(), check_out_time: new Date(new Date().setHours(17, 30)).toISOString(), check_in_method: 'qr_scan', check_out_method: 'qr_scan', is_late: false, status: 'approved', location_gps: { lat: -3.38, lng: 29.36 } },
+  { id: 'r2', user_id: 'emp-1', check_in_time: new Date(new Date().setHours(8, 45)).toISOString(), check_in_method: 'qr_scan', is_late: true, late_reason: 'Traffic', status: 'approved', location_gps: { lat: -3.38, lng: 29.36 } },
+  { id: 'r3', user_id: 'emp-2', check_in_time: new Date(new Date().setHours(8, 10)).toISOString(), check_in_method: 'qr_scan', is_late: false, status: 'approved', location_gps: { lat: -3.38, lng: 29.36 } },
+];
+
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
   const [usersList, setUsersList] = useState<User[]>(() => {
     const saved = localStorage.getItem(USER_STORAGE_KEY);
     return saved ? JSON.parse(saved) : INITIAL_USERS;
+  });
+
+  const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>(() => {
+    const saved = localStorage.getItem(ATTENDANCE_STORAGE_KEY);
+    return saved ? JSON.parse(saved) : INITIAL_ATTENDANCE;
   });
   
   const [isSignUp, setIsSignUp] = useState(false);
@@ -81,6 +93,10 @@ const App: React.FC = () => {
   useEffect(() => {
     localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(usersList));
   }, [usersList]);
+
+  useEffect(() => {
+    localStorage.setItem(ATTENDANCE_STORAGE_KEY, JSON.stringify(attendanceRecords));
+  }, [attendanceRecords]);
 
   useEffect(() => {
     if (user && !user.is_approved) {
@@ -135,6 +151,14 @@ const App: React.FC = () => {
 
   const handleApproveUser = (userId: string) => {
     setUsersList(prev => prev.map(u => u.id === userId ? { ...u, is_approved: true } : u));
+  };
+
+  const handleAddAttendance = (record: AttendanceRecord) => {
+    setAttendanceRecords(prev => [record, ...prev]);
+  };
+
+  const handleUpdateAttendance = (record: AttendanceRecord) => {
+    setAttendanceRecords(prev => prev.map(r => r.id === record.id ? record : r));
   };
 
   const handleLogout = () => {
@@ -228,9 +252,18 @@ const App: React.FC = () => {
   return (
     <Layout user={user} onLogout={handleLogout}>
       {user.role === 'hr' || user.role === 'manager' ? (
-        <AdminDashboard users={usersList} onApproveUser={handleApproveUser} />
+        <AdminDashboard 
+          users={usersList} 
+          attendanceRecords={attendanceRecords}
+          onApproveUser={handleApproveUser} 
+        />
       ) : user.is_approved ? (
-        <EmployeeView />
+        <EmployeeView 
+          user={user} 
+          attendanceRecords={attendanceRecords}
+          onAddAttendance={handleAddAttendance}
+          onUpdateAttendance={handleUpdateAttendance}
+        />
       ) : (
         <PendingApproval />
       )}
